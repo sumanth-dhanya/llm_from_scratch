@@ -138,7 +138,7 @@ class FeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.attention = MultiHeadAttention(
+        self.att = MultiHeadAttention(
             d_in=cfg['emb_dim'],
             d_out=cfg['emb_dim'],
             context_length=cfg['context_length'],
@@ -154,7 +154,7 @@ class TransformerBlock(nn.Module):
     def forward(self, x):
         shortcut = x
         x = self.norm1(x)
-        x = self.attention(x) # Shape (batch_size, num_tokens, emb_dim)
+        x = self.att(x) # Shape (batch_size, num_tokens, emb_dim)
         x = self.drop_shortcut(x)
         x = x + shortcut
 
@@ -175,7 +175,7 @@ class GPTModel(nn.Module):
         self.drop_emb = nn.Dropout(cfg['drop_rate'])
 
         # placeholder for the transformer block
-        self.trf_block = nn.Sequential(
+        self.trf_blocks = nn.Sequential(
             *[TransformerBlock(cfg) for _ in range(cfg['n_layers'])]
         )
         # use a placeholder for layer norm
@@ -188,9 +188,9 @@ class GPTModel(nn.Module):
         batch_size, seq_len = x.shape
         tok_embeds = self.tok_emb(x)
         pos_embeds = self.pos_emb(torch.arange(seq_len, device=x.device))
-        x = tok_embeds + pos_embeds
+        x = tok_embeds + pos_embeds  # Shape [batch_size, num_tokens, emb_size]
         x = self.drop_emb(x)
-        x = self.trf_block(x)
+        x = self.trf_blocks(x)
         x = self.final_norm(x)
         logits = self.out_head(x)
         return logits
@@ -212,12 +212,52 @@ def generate_text_simple(model, idx, max_new_tokens=100, context_size=1024):
         # Focus only on the last time step
         # (batch , n_tokens, vocab_size) becomes (batch, vocab_size)
         logits = logits[:, -1, :]
-        probas = torch.softmax(logits, dim=-1)
 
-        # get the idx of the vocab enty with the highest logits value
-        idx_next = torch.argmax(probas, dim=-1, keepdim=True)
+        # Get the idx of the vocab entry with the highest logits value
+        idx_next = torch.argmax(logits, dim=-1, keepdim=True)  # (batch, 1)
 
-        # append sampled index to the running sequence
-        idx = torch.cat((idx, idx_next), dim=-1)
+        # Append sampled index to the running sequence
+        idx = torch.cat((idx, idx_next), dim=1)  # (batch, n_tokens+1)
 
     return idx
+
+
+if __name__ == "__main__":
+
+    GPT_CONFIG_124M = {
+        "vocab_size": 50257,     # Vocabulary size
+        "context_length": 1024,  # Context length
+        "emb_dim": 768,          # Embedding dimension
+        "n_heads": 12,           # Number of attention heads
+        "n_layers": 12,          # Number of layers
+        "drop_rate": 0.1,        # Dropout rate
+        "qkv_bias": False        # Query-Key-Value bias
+    }
+
+    torch.manual_seed(123)
+    model = GPTModel(GPT_CONFIG_124M)
+    model.eval()  # disable dropout
+
+    start_context = "Hello, I am"
+
+    tokenizer = tiktoken.get_encoding("gpt2")
+    encoded = tokenizer.encode(start_context)
+    encoded_tensor = torch.tensor(encoded).unsqueeze(0)
+
+    print(f"\n{50*'='}\n{22*' '}IN\n{50*'='}")
+    print("\nInput text:", start_context)
+    print("Encoded input text:", encoded)
+    print("encoded_tensor.shape:", encoded_tensor.shape)
+
+    out = generate_text_simple(
+        model=model,
+        idx=encoded_tensor,
+        max_new_tokens=10,
+        context_size=GPT_CONFIG_124M["context_length"]
+    )
+    decoded_text = tokenizer.decode(out.squeeze(0).tolist())
+
+    print(f"\n\n{50*'='}\n{22*' '}OUT\n{50*'='}")
+    print("\nOutput:", out)
+    print("Output length:", len(out[0]))
+    print("Output text:", decoded_text)
